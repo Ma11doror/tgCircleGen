@@ -5,9 +5,11 @@ How to:
 1. Create JSON file with this structure:
 
 {
+  
   "bot_token": "3413241234",
   "chat_id": "@YourAwesomeChannel",
   "chat_id_test": "@testChannel"
+  
 }
 
 2. Run script with arguments: https://song.link/i/examplelink intTiming intDuraction -t
