@@ -15,11 +15,8 @@ How to:
 }
 
 2. Run script with arguments: https://song.link/i/examplelink intTiming intDuraction -t
-3. 
 intTiming - starting point in the YouTube video from which the clip will begin
-
 intDuraction - duration of the resulting video (in seconds)
-
 -t - flag, if you add this flag circle message will be sent to "chat_id_test"
 
 5. Run script and enjoy
