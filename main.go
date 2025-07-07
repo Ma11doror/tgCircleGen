@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -375,8 +376,8 @@ func sanitizeFilename(s string) string {
 	return s
 }
 
-func downloadYouTubeVideo(youtubeURL, filepathBase string) error {
-	cmd := exec.Command("yt-dlp", "-f", "bestvideo+bestaudio", "--merge-output-format", "mp4", "-o", filepathBase+".mp4", youtubeURL)
+func downloadYouTubeVideo(youtubeURL, fullFilepath string) error {
+	cmd := exec.Command("yt-dlp", "-f", "bestvideo+bestaudio", "--merge-output-format", "mp4", "-o", fullFilepath, youtubeURL)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -435,30 +436,57 @@ func printStream(reader io.Reader) {
 	}
 }
 
-func processVideo(inputFile, outputFile, startTime string, durationSeconds int) error {
+func normalizeVideo(inputFile, normalizedFile string) error {
+	fmt.Println("Normalizing video (aggressive mode) to fix potential timestamp issues...")
 
-	const fadeDuration = 3
+	args := []string{
+		"-fflags", "+genpts",
+		"-i", inputFile,
+		"-vf", "fps=30,setpts=PTS-STARTPTS",
+		"-af", "asetpts=PTS-STARTPTS",
+		"-ar", "44100",
+		"-preset", "ultrafast",
+		"-y",
+		normalizedFile,
+	}
+
+	cmd := exec.Command("ffmpeg", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+func processAndCutVideo(inputFile, outputFile, startTime string, durationSeconds int) error {
+	fmt.Println("Processing and cutting the normalized video...")
+
+	const fadeDuration = 1
 	fadeOutStart := durationSeconds - fadeDuration
 	if fadeOutStart < 0 {
 		fadeOutStart = 0
 	}
 
 	args := []string{
+		"-i", inputFile,
 		"-ss", startTime,
 		"-t", strconv.Itoa(durationSeconds),
-		"-i", inputFile + ".mp4",
+
 		"-vf", "crop=ih:ih,scale=400:400",
 		"-af", fmt.Sprintf("afade=t=in:st=0:d=%d,afade=t=out:st=%d:d=%d", fadeDuration, fadeOutStart, fadeDuration),
-		//"-an",
+
+		"-map", "0:v:0",
+		"-map", "0:a:0",
 		"-c:v", "libx264",
 		"-profile:v", "baseline",
 		"-pix_fmt", "yuv420p",
-		"-preset", "fast",
-		// "-c:a", "aac",
+		"-preset", "medium",
 		"-b:a", "128k",
 		"-movflags", "+faststart",
-		"-y", outputFile + ".mp4",
+		"-shortest",
+		"-y",
+		outputFile,
 	}
+
 	cmd := exec.Command("ffmpeg", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -516,50 +544,51 @@ func sendVideoNote(botToken, chatID, videoPath string, length int, duration int)
 }
 
 func main() {
-	var useTestChannel bool
-	requiredArgs := make([]string, 0)
+	// 1.
+	urlFlag := flag.String("url", "", "URL to a song (e.g., from song.link) (required)")
+	startFlag := flag.Int("start", -1, "Start time in seconds (required)")
+	durationFlag := flag.Int("duration", -1, "Duration in seconds (required, max 59)")
+	nameFlag := flag.String("name", "", "Custom display text for the link (optional)")
+	testFlag := flag.Bool("t", false, "Use the test Telegram channel")
 
-	for _, arg := range os.Args[1:] {
-		if arg == "-t" || arg == "t" {
-			useTestChannel = true
-		} else {
-			requiredArgs = append(requiredArgs, arg)
-		}
+	// 2.
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "This tool downloads a song, cuts a fragment, and sends it as a Telegram video note.\n\n")
+		flag.PrintDefaults()
 	}
 
-	if len(requiredArgs) < 3 {
-		log.Fatalln("Usage: go run main.go [-t] <song.link URL> <start time in seconds> <duration in seconds>")
+	// 3.
+	flag.Parse()
+
+	// 4.
+	if *urlFlag == "" || *startFlag == -1 || *durationFlag == -1 {
+		log.Println("Error: missing required flags: -url, -start, -duration")
+		flag.Usage()
+		os.Exit(1)
 	}
 
+	// 5.
 	config, err := loadConfig("config.json")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v\n", err)
 	}
 
-	targetChatID := getChatID(config, useTestChannel)
-	if useTestChannel {
+	targetChatID := getChatID(config, *testFlag)
+	if *testFlag {
 		fmt.Println("🚀 Using TEST channel.")
 		if targetChatID == "" {
 			log.Fatalln("Error: Test flag -t used, but 'chat_id_test' is not set in config.json")
 		}
 	}
 
-	urlArg := requiredArgs[0]
-	startSecondsArg, err := time.ParseDuration(requiredArgs[1] + "s")
-	if err != nil {
-		log.Fatalf("Invalid start time format: %v\n", err)
-	}
-	startTime := formatDuration(int(startSecondsArg.Seconds()))
-
-	desiredDurationStr := requiredArgs[2]
-
-	desiredDurationSec, err := strconv.Atoi(desiredDurationStr)
-	if err != nil {
-		log.Fatalf("Invalid duration format: %v. Must be an integer number of seconds.", err)
-	}
+	urlArg := *urlFlag
+	startTime := formatDuration(*startFlag)
+	desiredDurationSec := *durationFlag
+	customDisplayText := *nameFlag
 
 	if desiredDurationSec < 10 {
-		log.Fatalf("Error: Min duration is 10 sectonds. Your value: %d\n", desiredDurationSec)
+		log.Fatalf("Error: Min duration is 10 seconds. Your value: %d\n", desiredDurationSec)
 	}
 	if desiredDurationSec > 59 {
 		fmt.Printf("Warning: Requested duration %d seconds is greater than 59. Clamping to 59 seconds.\n", desiredDurationSec)
@@ -634,20 +663,39 @@ func main() {
 	var filenameBaseText string
 	var linkDisplayText string
 
-	if finalTitle != "" && finalArtist != "" {
-		linkDisplayText = fmt.Sprintf("\"%s\" by %s", finalTitle, finalArtist)
-		filenameBaseText = fmt.Sprintf("%s by %s", finalTitle, finalArtist)
-	} else if finalTitle != "" {
-		linkDisplayText = fmt.Sprintf("\"%s\"", finalTitle)
-		filenameBaseText = finalTitle
-	} else if finalArtist != "" {
-		linkDisplayText = fmt.Sprintf("Unknown Song by %s", finalArtist)
-		filenameBaseText = finalArtist
+	// If custom name is provided, it completely replaces parsed title and artist
+	if customDisplayText != "" {
+		linkDisplayText = customDisplayText
+		log.Printf("Using custom display text: '%s'\n", linkDisplayText)
 	} else {
-		log.Printf("No usable title or artist found for %s. Using generic filename and link text.\n", urlArg)
-		timestamp := time.Now().Unix()
-		filenameBaseText = fmt.Sprintf("track_%d", timestamp)
-		linkDisplayText = escapeMarkdownV2(urlArg)
+		if finalTitle != "" && finalArtist != "" {
+			linkDisplayText = fmt.Sprintf("\"%s\" by %s", finalTitle, finalArtist)
+			filenameBaseText = fmt.Sprintf("%s by %s", finalTitle, finalArtist)
+		} else if finalTitle != "" {
+			linkDisplayText = fmt.Sprintf("\"%s\"", finalTitle)
+			filenameBaseText = finalTitle
+		} else if finalArtist != "" {
+			linkDisplayText = fmt.Sprintf("Unknown Song by %s", finalArtist)
+			filenameBaseText = finalArtist
+		} else {
+			log.Printf("No usable title or artist found for %s. Using generic filename and link text.\n", urlArg)
+			timestamp := time.Now().Unix()
+			filenameBaseText = fmt.Sprintf("track_%d", timestamp)
+			linkDisplayText = escapeMarkdownV2(urlArg)
+		}
+	}
+
+	if customDisplayText == "" {
+		if finalTitle != "" && finalArtist != "" {
+			filenameBaseText = fmt.Sprintf("%s by %s", finalTitle, finalArtist)
+		} else if finalTitle != "" {
+			filenameBaseText = finalTitle
+		} else if finalArtist != "" {
+			filenameBaseText = finalArtist
+		} else {
+			timestamp := time.Now().Unix()
+			filenameBaseText = fmt.Sprintf("track_%d", timestamp)
+		}
 	}
 
 	var textForMarkdownSquareBrackets string
@@ -663,27 +711,40 @@ func main() {
 		filenameBase = fmt.Sprintf("track_%d_fallback", time.Now().Unix())
 	}
 	tempDir := "temp"
+
+	fmt.Println("Cleaning up temporary directory before start...")
+	err = os.RemoveAll(tempDir)
+	if err != nil {
+		log.Printf("⚠️ Warning: could not clean up temp directory before start: %v\n", err)
+	}
 	err = os.MkdirAll(tempDir, os.ModePerm)
 	if err != nil {
 		log.Fatalf("Failed to create temp directory %s: %v\n", tempDir, err)
 	}
 
-	videoPathBase := filepath.Join(tempDir, filenameBase)
-	outputPath := filepath.Join(tempDir, filenameBase+"_cut")
+	originalDownloadPath := filepath.Join(tempDir, filenameBase+".mp4")
+	normalizedPath := filepath.Join(tempDir, filenameBase+"_normalized.mp4")
+	finalOutputPath := filepath.Join(tempDir, filenameBase+"_cut.mp4")
 
 	fmt.Println("Downloading video from:", downloadURL)
-	err = downloadYouTubeVideo(downloadURL, videoPathBase)
+
+	err = downloadYouTubeVideo(downloadURL, originalDownloadPath)
 	if err != nil {
 		log.Fatalf("Failed to download video: %v\n", err)
 	}
 
-	fmt.Println("Processing video...")
-	err = processVideo(videoPathBase, outputPath, startTime, desiredDurationSec)
+	// Normalize the video to fix potential timestamp issues and then cut it
+	err = normalizeVideo(originalDownloadPath, normalizedPath)
 	if err != nil {
-		log.Fatalf("Failed to process video: %v\n", err)
+		log.Fatalf("Failed to normalize video: %v\n", err)
 	}
 
-	fmt.Printf("\n✅ Done! File: %s.mp4\n", outputPath)
+	err = processAndCutVideo(normalizedPath, finalOutputPath, startTime, desiredDurationSec)
+	if err != nil {
+		log.Fatalf("Failed to process and cut video: %v\n", err)
+	}
+
+	fmt.Printf("\n✅ Done! File: %s\n", finalOutputPath)
 
 	err = sendTextMessage(config.BotToken, targetChatID, messageText, "MarkdownV2", true)
 	if err != nil {
@@ -692,7 +753,7 @@ func main() {
 	fmt.Println("✅ Link message sent successfully (without preview)!")
 
 	videoNoteLength := 400
-	err = sendVideoNote(config.BotToken, targetChatID, outputPath+".mp4", videoNoteLength, desiredDurationSec)
+	err = sendVideoNote(config.BotToken, targetChatID, finalOutputPath, videoNoteLength, desiredDurationSec)
 	if err != nil {
 		log.Fatalf("❌ Failed to send video note: %v\n", err)
 	}
