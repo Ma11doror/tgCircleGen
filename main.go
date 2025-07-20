@@ -457,32 +457,41 @@ func normalizeVideo(inputFile, normalizedFile string) error {
 	return cmd.Run()
 }
 
-func processAndCutVideo(inputFile, outputFile, startTime string, durationSeconds int) error {
-	fmt.Println("Processing and cutting the normalized video...")
+func processAndCutVideo(inputFile, outputFile string, startTimeSec int, durationSeconds int) error {
+	fmt.Println("Processing video with robust filter_complex method (v2)...")
 
-	const fadeDuration = 1
-	fadeOutStart := durationSeconds - fadeDuration
+	const fadeDuration = 1.0
+
+	fadeOutStart := float64(durationSeconds) - fadeDuration
 	if fadeOutStart < 0 {
 		fadeOutStart = 0
 	}
 
+	filterComplex := fmt.Sprintf(
+		"[0:v]trim=start=%d:duration=%d,setpts=PTS-STARTPTS,crop=ih:ih,scale=400:400[vout];"+
+			"[0:a]atrim=start=%d:duration=%d,asetpts=PTS-STARTPTS,afade=t=in:st=0:d=%.2f,afade=t=out:st=%.2f:d=%.2f[aout]",
+		startTimeSec, durationSeconds,
+		startTimeSec, durationSeconds,
+		fadeDuration, fadeOutStart, fadeDuration,
+	)
+
 	args := []string{
+
+		//"-ss", strconv.Itoa(startTimeSec),
 		"-i", inputFile,
-		"-ss", startTime,
-		"-t", strconv.Itoa(durationSeconds),
 
-		"-vf", "crop=ih:ih,scale=400:400",
-		"-af", fmt.Sprintf("afade=t=in:st=0:d=%d,afade=t=out:st=%d:d=%d", fadeDuration, fadeOutStart, fadeDuration),
+		"-filter_complex", filterComplex,
 
-		"-map", "0:v:0",
-		"-map", "0:a:0",
+		"-map", "[vout]",
+		"-map", "[aout]",
+
 		"-c:v", "libx264",
 		"-profile:v", "baseline",
 		"-pix_fmt", "yuv420p",
 		"-preset", "medium",
+		"-c:a", "aac",
 		"-b:a", "128k",
 		"-movflags", "+faststart",
-		"-shortest",
 		"-y",
 		outputFile,
 	}
@@ -550,6 +559,7 @@ func main() {
 	durationFlag := flag.Int("duration", -1, "Duration in seconds (required, max 59)")
 	nameFlag := flag.String("name", "", "Custom display text for the link (optional)")
 	testFlag := flag.Bool("t", false, "Use the test Telegram channel")
+	removeFlag := flag.Bool("r", true, "Remove temporary files after completion (e.g., -r=false to keep)")
 
 	// 2.
 	flag.Usage = func() {
@@ -583,16 +593,15 @@ func main() {
 	}
 
 	urlArg := *urlFlag
-	startTime := formatDuration(*startFlag)
 	desiredDurationSec := *durationFlag
 	customDisplayText := *nameFlag
 
 	if desiredDurationSec < 10 {
 		log.Fatalf("Error: Min duration is 10 seconds. Your value: %d\n", desiredDurationSec)
 	}
-	if desiredDurationSec > 59 {
-		fmt.Printf("Warning: Requested duration %d seconds is greater than 59. Clamping to 59 seconds.\n", desiredDurationSec)
-		desiredDurationSec = 59
+	if desiredDurationSec > 60 {
+		fmt.Printf("Warning: Requested duration %d seconds is greater than 60. Clamping to 60 seconds.\n", desiredDurationSec)
+		desiredDurationSec = 60
 	}
 
 	oembedTitle, oembedArtist, oembedYoutubeURL, oembedErr := parseSongLink(urlArg)
@@ -723,7 +732,6 @@ func main() {
 	}
 
 	originalDownloadPath := filepath.Join(tempDir, filenameBase+".mp4")
-	normalizedPath := filepath.Join(tempDir, filenameBase+"_normalized.mp4")
 	finalOutputPath := filepath.Join(tempDir, filenameBase+"_cut.mp4")
 
 	fmt.Println("Downloading video from:", downloadURL)
@@ -733,13 +741,7 @@ func main() {
 		log.Fatalf("Failed to download video: %v\n", err)
 	}
 
-	// Normalize the video to fix potential timestamp issues and then cut it
-	err = normalizeVideo(originalDownloadPath, normalizedPath)
-	if err != nil {
-		log.Fatalf("Failed to normalize video: %v\n", err)
-	}
-
-	err = processAndCutVideo(normalizedPath, finalOutputPath, startTime, desiredDurationSec)
+	err = processAndCutVideo(originalDownloadPath, finalOutputPath, *startFlag, desiredDurationSec)
 	if err != nil {
 		log.Fatalf("Failed to process and cut video: %v\n", err)
 	}
@@ -759,11 +761,15 @@ func main() {
 	}
 	fmt.Println("✅ Video note sent successfully!")
 
-	fmt.Println("Cleaning up temporary files...")
-	err = os.RemoveAll(tempDir)
-	if err != nil {
-		log.Printf("⚠️ Warning: Failed to remove temporary directory %s: %v\n", tempDir, err)
+	if *removeFlag {
+		fmt.Println("Cleaning up temporary files...")
+		err = os.RemoveAll(tempDir)
+		if err != nil {
+			log.Printf("⚠️ Warning: Failed to remove temporary directory %s: %v\n", tempDir, err)
+		} else {
+			fmt.Println("✅ Cleanup complete.")
+		}
 	} else {
-		fmt.Println("✅ Cleanup complete.")
+		fmt.Printf("✅ Skipping temporary files cleanup. Files are in '%s' directory.\n", tempDir)
 	}
 }
