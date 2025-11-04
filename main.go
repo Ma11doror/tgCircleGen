@@ -376,8 +376,18 @@ func sanitizeFilename(s string) string {
 	return s
 }
 
-func downloadYouTubeVideo(youtubeURL, fullFilepath string) error {
-	cmd := exec.Command("yt-dlp", "-f", "bestvideo+bestaudio", "--merge-output-format", "mp4", "-o", fullFilepath, youtubeURL)
+func downloadYouTubeVideo(youtubeURL, fullFilepath, cookiesFile string) error {
+	args := []string{
+		"-f", "bestvideo+bestaudio/best",
+		"--merge-output-format", "mp4",
+		"-o", fullFilepath,
+	}
+	if cookiesFile != "" {
+		args = append(args, "--cookies", cookiesFile)
+	}
+	args = append(args, youtubeURL)
+	cmd := exec.Command("yt-dlp", args...)
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -557,7 +567,9 @@ func main() {
 	urlFlag := flag.String("url", "", "URL to a song (e.g., from song.link) (required)")
 	startFlag := flag.Int("start", -1, "Start time in seconds (required)")
 	durationFlag := flag.Int("duration", -1, "Duration in seconds (required, max 59)")
-	nameFlag := flag.String("name", "", "Custom display text for the link (optional)")
+	songnameFlag := flag.String("songname", "", "Custom song name (optional, requires authorname)")
+	authornameFlag := flag.String("authorname", "", "Custom author name (optional, requires songname)")
+	cookiesFlag := flag.String("cookies", "youtube_cookies.txt", "Path to a cookies file")
 	testFlag := flag.Bool("t", false, "Use the test Telegram channel")
 	removeFlag := flag.Bool("r", true, "Remove temporary files after completion (e.g., -r=false to keep)")
 
@@ -594,7 +606,6 @@ func main() {
 
 	urlArg := *urlFlag
 	desiredDurationSec := *durationFlag
-	customDisplayText := *nameFlag
 
 	if desiredDurationSec < 10 {
 		log.Fatalf("Error: Min duration is 10 seconds. Your value: %d\n", desiredDurationSec)
@@ -672,9 +683,11 @@ func main() {
 	var filenameBaseText string
 	var linkDisplayText string
 
-	// If custom name is provided, it completely replaces parsed title and artist
-	if customDisplayText != "" {
-		linkDisplayText = customDisplayText
+	if *songnameFlag != "" && *authornameFlag != "" {
+		songName := *songnameFlag
+		authorName := *authornameFlag
+		linkDisplayText = fmt.Sprintf("\"%s\" by %s", songName, authorName)
+		filenameBaseText = fmt.Sprintf("%s by %s", songName, authorName)
 		log.Printf("Using custom display text: '%s'\n", linkDisplayText)
 	} else {
 		if finalTitle != "" && finalArtist != "" {
@@ -691,19 +704,6 @@ func main() {
 			timestamp := time.Now().Unix()
 			filenameBaseText = fmt.Sprintf("track_%d", timestamp)
 			linkDisplayText = escapeMarkdownV2(urlArg)
-		}
-	}
-
-	if customDisplayText == "" {
-		if finalTitle != "" && finalArtist != "" {
-			filenameBaseText = fmt.Sprintf("%s by %s", finalTitle, finalArtist)
-		} else if finalTitle != "" {
-			filenameBaseText = finalTitle
-		} else if finalArtist != "" {
-			filenameBaseText = finalArtist
-		} else {
-			timestamp := time.Now().Unix()
-			filenameBaseText = fmt.Sprintf("track_%d", timestamp)
 		}
 	}
 
@@ -736,7 +736,7 @@ func main() {
 
 	fmt.Println("Downloading video from:", downloadURL)
 
-	err = downloadYouTubeVideo(downloadURL, originalDownloadPath)
+	err = downloadYouTubeVideo(downloadURL, originalDownloadPath, *cookiesFlag)
 	if err != nil {
 		log.Fatalf("Failed to download video: %v\n", err)
 	}
