@@ -577,6 +577,8 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "This tool downloads a song, cuts a fragment, and sends it as a Telegram video note.\n\n")
+		fmt.Fprintf(os.Stderr, "Note: For age-restricted videos, a 'youtube_cookies.txt' file is required for authentication.\n")
+		fmt.Fprintf(os.Stderr, "The script will use this file by default if it exists in the same directory.\n\n")
 		flag.PrintDefaults()
 	}
 
